@@ -1,6 +1,12 @@
 # AzVnetTools
 This module will help to find next available subnet (CIDR) with given ip mask and more.
-Module include these commands:
+
+## Installation
+```
+Install-Module -Name AzVnetTools
+```
+
+## Module include these commands:
 - Get-AzNextAvailableSubnet
 -- Find next available subnet address with given mask
 - Get-IncrementedIPAddress
@@ -8,8 +14,8 @@ Module include these commands:
 - Test-SubnetOverlap
 -- Test if two subnet addresses overlap
 
+## Example usage
 ```
-# Example usage
 $resourceGroupName = "rg-test"  # Replace with your resource group name
 $vnetName = "vnet-test"  # Replace with your VNet name
 $newSubnetMask = 28  # Replace with your desired subnet mask
@@ -23,7 +29,7 @@ Write-Host "Next available subnet: $nextAvailableSubnet"
 Write-Host "Network:"$nextAvailableSubnet.Split("/")[0]
 Write-Host "Mask:"$nextAvailableSubnet.Split("/")[1]
 ```
--- Example output:
+Output:
 ```
 Next available subnet: 10.10.16.176/28
 Network: 10.10.16.176
