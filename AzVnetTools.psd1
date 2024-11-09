@@ -81,7 +81,7 @@ PrivateData = @{
         LicenseUri = 'https://www.gnu.org/licenses/agpl-3.0.en.html'
 
         # A URL to the main website for this project.
-        # ProjectUri = ''
+        ProjectUri = 'https://github.com/Fredrik81/AzVnetTools'
 
         # A URL to an icon representing this module.
         # IconUri = ''
