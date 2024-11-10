@@ -55,11 +55,10 @@ function Get-IncrementedIPAddress {
     }
 }
 
-function Get-FlippedAddressBits
-{
+function Get-FlippedAddressBits {
     [CmdletBinding()]
     param (
-        [Parameter(Mandatory=$true)]
+        [Parameter(Mandatory = $true)]
         $IPAddress
     )
 
@@ -105,60 +104,131 @@ Requires the Az PowerShell module to be installed and connected to an Azure acco
 #>
 function Get-AzNextAvailableSubnet {
     param (
-        [Parameter(Mandatory=$true)]
+        [Parameter(Mandatory = $true)]
         [string]$ResourceGroupName,
-        [Parameter(Mandatory=$true)]
+        [Parameter(Mandatory = $true)]
         [string]$VNetName,
-        [Parameter(Mandatory=$true)]
+        [Parameter(Mandatory = $true)]
+        [ValidateRange(1, 32)]
         [int]$NewSubnetMask
     )
 
-    # Get the VNet
-    $vnet = Get-AzVirtualNetwork -ResourceGroupName $ResourceGroupName -Name $VNetName
+    begin {
+        # Check if Azure PowerShell module is installed
+        if (-not (Get-Module -ListAvailable -Name Az.Network)) {
+            throw "Azure PowerShell module 'Az.Network' is not installed. Please install it using: Install-Module -Name Az.Network"
+        }
 
-    if (-not $vnet) {
-        Write-Error "VNet not found"
-        return $null
+        # Check Azure connection
+        try {
+            $context = Get-AzContext
+            if (-not $context) {
+                throw "Not connected to Azure. Please run Connect-AzAccount first."
+            }
+        }
+        catch {
+            throw "Failed to check Azure connection: $($_.Exception.Message)"
+        }
     }
 
-    # Get existing subnets
-    $existingSubnets = $vnet.Subnets.AddressPrefix
+    process {
+        # Get the VNet
+        try {
+            # Verify resource group exists
+            $resourceGroup = Get-AzResourceGroup -Name $ResourceGroupName.Trim() -ErrorAction Stop
+            Write-Verbose "Found resource group: $ResourceGroupName in subscription $((Get-AzContext).Subscription.Name)"
+        }
+        catch {
+            Throw "Could not find resource group: $ResourceGroupName in subscription $((Get-AzContext).Subscription.Name)"
+        }
 
-    # Get the VNet address space
-    $vnetAddressSpace = $vnet.AddressSpace.AddressPrefixes[0]
-    $vnetNetwork = [System.Net.IPAddress]::Parse(($vnetAddressSpace -split "/")[0])
-    $vnetMask = [System.Convert]::ToInt32(($vnetAddressSpace -split "/")[1])
-
-    # Calculate the number of IP addresses in the new subnet
-    $newSubnetSize = [Math]::Pow(2, (32 - $NewSubnetMask))
-
-    # Start from the beginning of the VNet range
-    $currentIP = $vnetNetwork.IPAddressToString
-
-    $maxAddress = Get-IncrementedIPAddress -IPAddress $vnetNetwork.IPAddressToString -IncrementBy ([Math]::Pow(2, (32 - $vnetMask)))
-    $maxBit = [System.Net.IPAddress]::Parse($maxAddress).Address
-    $maxBit = Get-FlippedAddressBits -IPAddress $maxBit
-    while ((Get-FlippedAddressBits -IPAddress ([System.Net.IPAddress]::Parse($currentIP).Address)) -lt $maxBit) {
-        $candidateCIDR = "$currentIP/$NewSubnetMask"
-
-        # Check if this range overlaps with existing subnets
-        $overlap = $false
-        foreach ($subnet in $existingSubnets) {
-            if (Test-SubnetOverlap -Subnet1 $candidateCIDR -Subnet2 $subnet) {
-                $overlap = $true
-                break
+        # Get Virtual Network with detailed error handling
+        try {
+            $vnet = Get-AzVirtualNetwork -ResourceGroupName $ResourceGroupName.Trim() -Name $VNetName.Trim() -ErrorAction Stop
+            if (-not $vnet) {
+                throw "Virtual Network not found"
+            }
+            Write-Verbose "Successfully retrieved VNet: $VNetName"
+        }
+        catch {
+            $errMsg = $_.Exception.Message
+            switch -Regex ($errMsg) {
+                'StatusCode: 404' {
+                    throw "Virtual Network '$VNetName' not found in resource group '$ResourceGroupName'"
+                }
+                'StatusCode: 403' {
+                    throw "Access denied. Please check your permissions for Virtual Network '$VNetName'"
+                }
+                'StatusCode: 429' {
+                    throw "Too many requests. Please try again later"
+                }
+                default {
+                    throw "Failed to get Virtual Network: $($errMsg)"
+                }
             }
         }
 
-        if (-not $overlap) {
-            return $candidateCIDR
+        # Validate VNet has address space
+        if (-not $vnet.AddressSpace.AddressPrefixes -or $vnet.AddressSpace.AddressPrefixes.Count -eq 0) {
+            throw "Virtual Network has no address space configured"
         }
 
-        # Move to the next potential subnet
-        $currentIP = Get-IncrementedIPAddress -IPAddress $currentIP -IncrementBy $newSubnetSize
-    }
+        # Get existing subnets
+        $existingSubnets = $vnet.Subnets.AddressPrefix
+        Write-Verbose "Found $($existingSubnets.Count) existing subnets"
 
-    return
+        # Get the VNet address space
+        $vnetAddressSpace = $vnet.AddressSpace.AddressPrefixes[0]
+        $vnetNetwork = [System.Net.IPAddress]::Parse(($vnetAddressSpace -split "/")[0])
+        $vnetMask = [System.Convert]::ToInt32(($vnetAddressSpace -split "/")[1])
+
+        # Validate subnet mask is valid for VNet
+        if ($NewSubnetMask -lt $vnetMask) {
+            throw "New subnet mask /$NewSubnetMask is larger than VNet mask /$vnetMask"
+        }
+
+        try {
+            # Calculate the number of IP addresses in the new subnet
+            $newSubnetSize = [Math]::Pow(2, (32 - $NewSubnetMask))
+
+            # Start from the beginning of the VNet range
+            $currentIP = $vnetNetwork.IPAddressToString
+
+            #Get vNet maximum parameters
+            $maxAddress = Get-IncrementedIPAddress -IPAddress $vnetNetwork.IPAddressToString -IncrementBy ([Math]::Pow(2, (32 - $vnetMask)))
+            $maxBit = [System.Net.IPAddress]::Parse($maxAddress).Address
+            $maxBit = Get-FlippedAddressBits -IPAddress $maxBit
+
+            Write-Verbose "Searching for available subnet space..."
+            while ((Get-FlippedAddressBits -IPAddress ([System.Net.IPAddress]::Parse($currentIP).Address)) -lt $maxBit) {
+                $candidateCIDR = "$currentIP/$NewSubnetMask"
+
+                # Check if this range overlaps with existing subnets
+                $overlap = $false
+                foreach ($subnet in $existingSubnets) {
+                    if (Test-SubnetOverlap -Subnet1 $candidateCIDR -Subnet2 $subnet) {
+                        $overlap = $true
+                        Write-Verbose "Subnet $candidateCIDR overlaps with existing subnet $subnet"
+                        break
+                    }
+                }
+
+                if (-not $overlap) {
+                    Write-Verbose "Found available subnet: $candidateCIDR"
+                    return $candidateCIDR
+                }
+
+                # Move to the next potential subnet
+                $currentIP = Get-IncrementedIPAddress -IPAddress $currentIP -IncrementBy $newSubnetSize
+            }
+            throw "No available subnet space found within VNet address range"
+        }
+        catch {
+            # Log the error and rethrow
+            Write-Error "Error in Get-NextAvailableSubnet: $($_.Exception.Message)"
+            throw
+        }
+    }
 }
 
 <#
@@ -194,7 +264,7 @@ function Test-SubnetOverlap {
     $network2 = [System.Net.IPAddress]::Parse(($Subnet2 -split "/")[0])
     $mask2 = [System.Convert]::ToInt32(($Subnet2 -split "/")[1])
     $net2start = Get-FlippedAddressBits -IPAddress $network2.Address
-    $net2end = $net2start + ([Math]::Pow(2, (32 - $mask2))) -1
+    $net2end = $net2start + ([Math]::Pow(2, (32 - $mask2))) - 1
 
     return (($net1start -le $net2end) -and ($net1end -ge $net2start))
 }
